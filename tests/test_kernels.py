@@ -50,12 +50,55 @@ def test_rms_norm_is_the_affine_norm():
 
 
 @torch.no_grad()
+def test_fold_scale_is_one_kernel_of_the_same_value():
+    n = norm(64)
+    scale = randn(2, 1, 64, seed=2) * 0.5
+    expected = n.weight * (1.0 + scale) - 1.0
+    torch.testing.assert_close(kernels.fold_scale(n, scale, "cpu"), expected, **TOL)
+    # the (B, 1, D) view of a (B, 4, D) modulation, as the block hands it over
+    mod = randn(2, 4, 64, seed=3) * 0.5
+    out = kernels.fold_scale(n, mod[:, 2:3], "cpu")
+    assert out.is_contiguous() and out.shape == (2, 1, 64)
+    torch.testing.assert_close(out, n.weight * (1.0 + mod[:, 2:3]) - 1.0, **TOL)
+
+
+@torch.no_grad()
+def test_constants_follow_the_weight():
+    n = norm(64)
+    first = kernels.affine_scale(n, torch.float32, "cpu")
+    torch.testing.assert_close(first, n.weight - 1.0, **TOL)
+    assert kernels.affine_scale(n, torch.float32, "cpu") is first  # cached
+    assert kernels.affine_scale(n, torch.float64, "cpu") is not first  # per dtype
+    # written in place (Forge baking a LoRA into the weight): recomputed
+    n.weight.mul_(2.0)
+    second = kernels.affine_scale(n, torch.float32, "cpu")
+    assert second is not first
+    torch.testing.assert_close(second, n.weight - 1.0, **TOL)
+    # replaced: recomputed
+    n.weight = torch.nn.Parameter(torch.full((64,), 1.5))
+    torch.testing.assert_close(kernels.affine_scale(n, torch.float32, "cpu"), torch.full((64,), 0.5), **TOL)
+    # the fold's w - 1 is kept the same way, and follows a replaced weight too
+    scale = randn(2, 1, 64, seed=2) * 0.5
+    torch.testing.assert_close(kernels.fold_scale(n, scale, "cpu"), 1.5 * (1.0 + scale) - 1.0, **TOL)
+    n.weight = torch.nn.Parameter(torch.full((64,), 0.5))
+    torch.testing.assert_close(kernels.fold_scale(n, scale, "cpu"), 0.5 * (1.0 + scale) - 1.0, **TOL)
+    # a state dict load writes in place as well
+    n.load_state_dict({"weight": torch.full((64,), 2.0)})
+    torch.testing.assert_close(kernels.affine_scale(n, torch.float32, "cpu"), torch.full((64,), 1.0), **TOL)
+
+
+@torch.no_grad()
 def test_fused_norms_apply_forge_on_the_fly_patches():
     n = norm(64)
     x, scale = randn(2, 10, 64), randn(2, 1, 64, seed=2) * 0.5
+    plain = kernels.rms_norm(n, x)
     n.weight_function.append(lambda w: w * 2.0)
+    # a patch bypasses the cached constants: the same weight tensor, another result
     torch.testing.assert_close(kernels.rms_norm(n, x), n(x), **TOL)
+    torch.testing.assert_close(kernels.rms_norm(n, x), plain * 2.0, **TOL)
     torch.testing.assert_close(kernels.modulated_rms_norm(n, x, scale), n(x) * (1.0 + scale), **TOL)
+    n.weight_function.clear()
+    torch.testing.assert_close(kernels.rms_norm(n, x), plain, **TOL)
 
 
 @torch.no_grad()

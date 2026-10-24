@@ -33,8 +33,9 @@ try:
 except ImportError:
     _ck = None
 
-__all__ = ["attention", "available", "cast_to", "fused", "gated_residual_", "linear_swiglu", "modulated_rms_norm",
-           "norm_rope", "norm_weight", "report", "rms_norm", "rope_freqs", "swiglu_fold", "why_not"]
+__all__ = ["affine_scale", "attention", "available", "cast_to", "constant", "fold_scale", "fused", "gated_residual_",
+           "linear_swiglu", "modulated_fused", "modulated_rms_norm", "norm_rope", "norm_weight", "report", "rms_norm",
+           "rope_freqs", "swiglu_fold", "why_not"]
 
 # the compute dtypes of the fused path; float16 keeps the eager one
 FUSED_DTYPES = (torch.bfloat16, torch.float32)
@@ -128,21 +129,61 @@ def _shift(d, dtype, device):
     return zeros
 
 
-def modulated_rms_norm(norm, x, scale):
-    """norm(x) * (1 + scale) in one pass, in x's dtype. x (B, N, D), scale (B, 1, D) float32.
+def _key(weight):
+    # what can change a weight under a module: replaced (Forge's LoRA patching), moved or cast (offload), or
+    # written in place (_version counts in-place writes, inside inference mode too)
+    return (weight.data_ptr(), str(weight.device), weight.dtype, weight._version)
+
+
+def constant(owner, name, weight, compute):
+    """compute(weight), kept on owner under name until weight is replaced, moved, cast or written in place.
+
+    Step-independent vectors of a block (w - 1 of a norm, a tanh gate) are a kernel launch each per block per step
+    when recomputed, and nothing when kept: ~1500 launches less per forward of the 44-block model.
+    """
+    key = _key(weight)
+    entry = owner.__dict__.get(name)
+    if entry is None or entry[0] != key:
+        entry = (key, compute(weight))
+        owner.__dict__[name] = entry
+    return entry[1]
+
+
+def affine_scale(norm, dtype, device):
+    """w - 1 in dtype: the norm's weight as an rms_adaln scale. Cached unless an on-the-fly LoRA patches the weight."""
+    if norm.weight_function:
+        return (norm_weight(norm, device) - 1.0).to(dtype)
+    return constant(norm, f"_fibo2_affine_{dtype}", norm.weight,
+                    lambda w: (cast_to(w, torch.float32, device) - 1.0).to(dtype))
+
+
+def fold_scale(norm, scale, device):
+    """w * (1 + s) - 1 in s's dtype, one kernel: addcmul(w - 1, w, s) with the cached w - 1. s (B, 1, D).
 
     The norm weight folds into the modulation: rmsnorm(x) * w * (1 + s) = rmsnorm(x) * (1 + (w * (1 + s) - 1)).
+    The sum runs in float32 (the elementwise kernel's working precision) and rounds once on the way out.
     """
-    weight = norm_weight(norm, x.device)
-    scale = (weight * (1.0 + scale) - 1.0).to(x.dtype)
-    return _ck.rms_adaln(x, scale, _shift(x.shape[-1], x.dtype, x.device), norm.eps)
+    if norm.weight_function:
+        return (norm_weight(norm, device) * (1.0 + scale.float()) - 1.0).to(scale.dtype)
+    minus_one = constant(norm, "_fibo2_fold", norm.weight, lambda w: cast_to(w, torch.float32, device) - 1.0)
+    weight = cast_to(norm.weight, torch.float32, device)
+    return torch.addcmul(minus_one, weight, scale, out=torch.empty(scale.shape, dtype=scale.dtype, device=device))
+
+
+def modulated_fused(x, folded_scale, eps):
+    """rmsnorm(x) * (1 + folded_scale) in one pass, in x's dtype; folded_scale from fold_scale."""
+    return _ck.rms_adaln(x, folded_scale, _shift(x.shape[-1], x.dtype, x.device), eps)
+
+
+def modulated_rms_norm(norm, x, scale):
+    """norm(x) * (1 + scale) in one pass, in x's dtype. x (B, N, D), scale (B, 1, D)."""
+    return modulated_fused(x, fold_scale(norm, scale.to(x.dtype), x.device), norm.eps)
 
 
 def rms_norm(norm, x):
     """norm(x) in one pass, in x's dtype: rms_adaln with the affine weight as its scale. The last dim is the
     normalized one, so (B, N, D) and a per-head (B, N, H, D) both work."""
-    weight = norm_weight(norm, x.device)
-    return _ck.rms_adaln(x, (weight - 1.0).to(x.dtype), _shift(x.shape[-1], x.dtype, x.device), norm.eps)
+    return _ck.rms_adaln(x, affine_scale(norm, x.dtype, x.device), _shift(x.shape[-1], x.dtype, x.device), norm.eps)
 
 
 def rope_freqs(freqs):

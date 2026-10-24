@@ -226,15 +226,31 @@ def _gated(x, y, mods, index):
     return torch.cat([x[:, a:e] + (torch.tanh(m[index]) * y[:, a:e]).to(x.dtype) for a, e, m in mods], dim=1)
 
 
+def _modulations_fused(block, spans, device):
+    """[(start, end, adaln)] -> [(start, end, (scale_msa, gate_msa, scale_mlp, gate_mlp))] for the fused path, each
+    (B, 1, D) in the compute dtype, once per distinct time embedding and in four kernels: the adaLN projection, one
+    tanh over both gates, and the two scales folded with their norm weights (kernels.fold_scale)."""
+    cache = {}
+    out = []
+    for start, end, adaln in spans:
+        if id(adaln) not in cache:
+            mod = block.adaLN_modulation(adaln).view(adaln.shape[0], 4, -1)
+            gates = torch.tanh(mod[:, 1::2])
+            cache[id(adaln)] = (kernels.fold_scale(block.attention_norm1, mod[:, 0:1], device), gates[:, 0:1],
+                                kernels.fold_scale(block.ffn_norm1, mod[:, 2:3], device), gates[:, 1:2])
+        out.append((start, end, cache[id(adaln)]))
+    return out
+
+
 def _modulated_fused(norm, x, mods, index):
-    """norm(x) * (1 + scale) per span in one kernel pass each, in x's dtype (the spans cover x)."""
+    """rmsnorm(x) * (1 + folded scale) per span in one kernel pass each, in x's dtype (the spans cover x)."""
     if len(mods) == 1:
-        return kernels.modulated_rms_norm(norm, x, mods[0][2][index])
-    return torch.cat([kernels.modulated_rms_norm(norm, x[:, a:e], m[index]) for a, e, m in mods], dim=1)
+        return kernels.modulated_fused(x, mods[0][2][index], norm.eps)
+    return torch.cat([kernels.modulated_fused(x[:, a:e], m[index], norm.eps) for a, e, m in mods], dim=1)
 
 
 def _gates(mods, index):
-    return [(a, e, torch.tanh(m[index])) for a, e, m in mods]
+    return [(a, e, m[index]) for a, e, m in mods]
 
 
 class Block(nn.Module):
@@ -259,9 +275,10 @@ class Block(nn.Module):
         """x (B, N, D) residual stream; spans [(start, end, adaln)] cover x, adaln (B, 256) the time embedding that
         modulates those rows; context (B, M, cap_feat_dim) for an injection block. Fused: x is in dtype and is
         updated in place."""
-        mods = _modulations(self, spans)
         if fused:
-            return self.forward_fused(x, freqs, mods, context, transformer_options)
+            return self.forward_fused(x, freqs, _modulations_fused(self, spans, x.device), context,
+                                      transformer_options)
+        mods = _modulations(self, spans)
         y = self.attention(_modulate(self.attention_norm1(x), mods, 0, dtype), freqs, transformer_options)
         x = _gated(x, self.attention_norm2(project(self.attention.out, y, dtype)), mods, 1)
         if self.cross_attention is not None:
@@ -273,14 +290,17 @@ class Block(nn.Module):
         return _gated(x, self.ffn_norm2(project(self.feed_forward.w2, y, dtype)), mods, 3)
 
     def forward_fused(self, x, freqs, mods, context, transformer_options=None):
-        """The block on comfy-kitchen's kernels: the same arithmetic as forward, in x's dtype, x updated in place."""
+        """The block on comfy-kitchen's kernels: the same arithmetic as forward, in x's dtype, x updated in place;
+        mods from _modulations_fused."""
         y = self.attention(_modulated_fused(self.attention_norm1, x, mods, 0), freqs, transformer_options, fused=True)
         x = kernels.gated_residual_(x, kernels.rms_norm(self.attention_norm2, self.attention.out(y)), _gates(mods, 1))
         if self.cross_attention is not None:
             y = self.cross_attention(kernels.rms_norm(self.cross_attn_norm1, x), context, transformer_options,
                                      fused=True)
             y = kernels.rms_norm(self.cross_attn_norm2, self.cross_attention.to_out(y))
-            x.addcmul_(y, torch.tanh(kernels.cast_to(self.cross_attn_gate, x.dtype, x.device)))
+            gate = kernels.constant(self, f"_fibo2_gate_{x.dtype}", self.cross_attn_gate,
+                                    lambda g: torch.tanh(kernels.cast_to(g, x.dtype, x.device)))
+            x.addcmul_(y, gate)
         y = self.feed_forward.forward_fused(_modulated_fused(self.ffn_norm1, x, mods, 2))
         return kernels.gated_residual_(x, kernels.rms_norm(self.ffn_norm2, y), _gates(mods, 3))
 
