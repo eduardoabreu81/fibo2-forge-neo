@@ -33,9 +33,9 @@ try:
 except ImportError:
     _ck = None
 
-__all__ = ["affine_scale", "attention", "available", "cast_to", "constant", "fold_scale", "fused", "gated_residual_",
-           "linear_swiglu", "modulated_fused", "modulated_rms_norm", "norm_rope", "norm_weight", "report", "rms_norm",
-           "rope_freqs", "swiglu_fold", "why_not"]
+__all__ = ["Constants", "affine_scale", "attention", "available", "cast_to", "fold_scale", "fused", "gate_tanh",
+           "gated_residual_", "linear_swiglu", "modulated_fused", "modulated_rms_norm", "norm_rope", "norm_weight",
+           "report", "rms_norm", "rope_freqs", "swiglu_fold", "why_not"]
 
 # the compute dtypes of the fused path; float16 keeps the eager one
 FUSED_DTYPES = (torch.bfloat16, torch.float32)
@@ -129,45 +129,70 @@ def _shift(d, dtype, device):
     return zeros
 
 
-def _key(weight):
-    # what can change a weight under a module: replaced (Forge's LoRA patching), moved or cast (offload), or
-    # written in place (_version counts in-place writes, inside inference mode too)
-    return (weight.data_ptr(), str(weight.device), weight.dtype, weight._version)
+class Constants:
+    """The step-independent vectors of one forward: w - 1 of every affine norm (as the rms_adaln scale in the compute
+    dtype, and in float32 for the fold, with w itself) and tanh of every cross-attention gate.
 
-
-def constant(owner, name, weight, compute):
-    """compute(weight), kept on owner under name until weight is replaced, moved, cast or written in place.
-
-    Step-independent vectors of a block (w - 1 of a norm, a tanh gate) are a kernel launch each per block per step
-    when recomputed, and nothing when kept: ~1500 launches less per forward of the 44-block model.
+    Built at the start of each forward from the live weights, in a handful of kernels for all of them (one cat, three
+    elementwise passes, one tanh) instead of a few per norm per block. Reading them each forward keeps them right
+    whatever writes the weights in place, which a cache could not see: Forge patches LoRAs in place when asked to,
+    its model weights are inference tensors without a version counter, and LoRA control extensions rewrite weights
+    mid-sampling. A norm under an on-the-fly LoRA patch (weight_function set) or with its weight off the compute
+    device is left out and computed per call.
     """
-    key = _key(weight)
-    entry = owner.__dict__.get(name)
-    if entry is None or entry[0] != key:
-        entry = (key, compute(weight))
-        owner.__dict__[name] = entry
-    return entry[1]
+
+    def __init__(self, norms, gates, dtype, device):
+        self.minus_one, self.minus_one32, self.weight32, self.gate = {}, {}, {}, {}
+        norms = [n for n in norms if not n.weight_function and n.weight.device == device]
+        if norms:
+            if len({n.weight.dtype for n in norms}) == 1:
+                weight32 = torch.cat([n.weight for n in norms]).float()
+            else:
+                weight32 = torch.cat([n.weight.float() for n in norms])
+            minus_one32 = weight32 - 1.0
+            minus_one = minus_one32.to(dtype)
+            offset = 0
+            for n in norms:
+                end = offset + n.weight.shape[0]
+                self.weight32[n] = weight32[offset:end]
+                self.minus_one32[n] = minus_one32[offset:end]
+                self.minus_one[n] = minus_one[offset:end]
+                offset = end
+        gates = [g for g in gates if g.device == device]
+        if gates:
+            tanh = torch.tanh(torch.cat(gates).to(dtype))
+            for i, g in enumerate(gates):
+                self.gate[id(g)] = tanh[i:i + 1]
 
 
-def affine_scale(norm, dtype, device):
-    """w - 1 in dtype: the norm's weight as an rms_adaln scale. Cached unless an on-the-fly LoRA patches the weight."""
-    if norm.weight_function:
-        return (norm_weight(norm, device) - 1.0).to(dtype)
-    return constant(norm, f"_fibo2_affine_{dtype}", norm.weight,
-                    lambda w: (cast_to(w, torch.float32, device) - 1.0).to(dtype))
+def affine_scale(norm, dtype, device, consts=None):
+    """w - 1 in dtype: the norm's weight as an rms_adaln scale, from consts when it holds this norm."""
+    if consts is not None:
+        value = consts.minus_one.get(norm)
+        if value is not None and value.dtype == dtype:
+            return value
+    return (norm_weight(norm, device) - 1.0).to(dtype)
 
 
-def fold_scale(norm, scale, device):
-    """w * (1 + s) - 1 in s's dtype, one kernel: addcmul(w - 1, w, s) with the cached w - 1. s (B, 1, D).
+def fold_scale(norm, scale, device, consts=None):
+    """w * (1 + s) - 1 in s's dtype; s (B, 1, D). One kernel with consts: addcmul(w - 1, w, s).
 
     The norm weight folds into the modulation: rmsnorm(x) * w * (1 + s) = rmsnorm(x) * (1 + (w * (1 + s) - 1)).
     The sum runs in float32 (the elementwise kernel's working precision) and rounds once on the way out.
     """
-    if norm.weight_function:
-        return (norm_weight(norm, device) * (1.0 + scale.float()) - 1.0).to(scale.dtype)
-    minus_one = constant(norm, "_fibo2_fold", norm.weight, lambda w: cast_to(w, torch.float32, device) - 1.0)
-    weight = cast_to(norm.weight, torch.float32, device)
-    return torch.addcmul(minus_one, weight, scale, out=torch.empty(scale.shape, dtype=scale.dtype, device=device))
+    if consts is not None and norm in consts.minus_one32:
+        return torch.addcmul(consts.minus_one32[norm], consts.weight32[norm], scale,
+                             out=torch.empty(scale.shape, dtype=scale.dtype, device=device))
+    return (norm_weight(norm, device) * (1.0 + scale.float()) - 1.0).to(scale.dtype)
+
+
+def gate_tanh(gate, dtype, device, consts=None):
+    """tanh(gate) in dtype for a (1,) gate parameter, from consts when it holds it."""
+    if consts is not None:
+        value = consts.gate.get(id(gate))
+        if value is not None and value.dtype == dtype:
+            return value
+    return torch.tanh(cast_to(gate, dtype, device))
 
 
 def modulated_fused(x, folded_scale, eps):
@@ -180,10 +205,11 @@ def modulated_rms_norm(norm, x, scale):
     return modulated_fused(x, fold_scale(norm, scale.to(x.dtype), x.device), norm.eps)
 
 
-def rms_norm(norm, x):
+def rms_norm(norm, x, consts=None):
     """norm(x) in one pass, in x's dtype: rms_adaln with the affine weight as its scale. The last dim is the
     normalized one, so (B, N, D) and a per-head (B, N, H, D) both work."""
-    return _ck.rms_adaln(x, affine_scale(norm, x.dtype, x.device), _shift(x.shape[-1], x.dtype, x.device), norm.eps)
+    return _ck.rms_adaln(x, affine_scale(norm, x.dtype, x.device, consts), _shift(x.shape[-1], x.dtype, x.device),
+                         norm.eps)
 
 
 def rope_freqs(freqs):

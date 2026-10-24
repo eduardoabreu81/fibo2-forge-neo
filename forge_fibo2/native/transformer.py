@@ -194,12 +194,12 @@ class Attention(nn.Module):
         self.norm_q = RMSNorm(dim // n_heads, eps)
         self.norm_k = RMSNorm(dim // n_heads, eps)
 
-    def forward(self, x, context, transformer_options=None, fused=False):
+    def forward(self, x, context, transformer_options=None, fused=False, consts=None):
         """x (B, N, D), context (B, M, kv_dim) -> attention before to_out, (B, N, D)."""
         q = self.to_q(x).unflatten(-1, (self.n_heads, -1))
         k, v = self.to_kv(context).unflatten(-1, (2, self.n_heads, -1)).unbind(2)
         if fused:
-            q, k = kernels.rms_norm(self.norm_q, q), kernels.rms_norm(self.norm_k, k)
+            q, k = kernels.rms_norm(self.norm_q, q, consts), kernels.rms_norm(self.norm_k, k, consts)
         else:
             q, k = self.norm_q(q).to(x.dtype), self.norm_k(k).to(x.dtype)
         return kernels.attention(q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2).to(x.dtype),
@@ -226,7 +226,7 @@ def _gated(x, y, mods, index):
     return torch.cat([x[:, a:e] + (torch.tanh(m[index]) * y[:, a:e]).to(x.dtype) for a, e, m in mods], dim=1)
 
 
-def _modulations_fused(block, spans, device):
+def _modulations_fused(block, spans, device, consts=None):
     """[(start, end, adaln)] -> [(start, end, (scale_msa, gate_msa, scale_mlp, gate_mlp))] for the fused path, each
     (B, 1, D) in the compute dtype, once per distinct time embedding and in four kernels: the adaLN projection, one
     tanh over both gates, and the two scales folded with their norm weights (kernels.fold_scale)."""
@@ -236,8 +236,8 @@ def _modulations_fused(block, spans, device):
         if id(adaln) not in cache:
             mod = block.adaLN_modulation(adaln).view(adaln.shape[0], 4, -1)
             gates = torch.tanh(mod[:, 1::2])
-            cache[id(adaln)] = (kernels.fold_scale(block.attention_norm1, mod[:, 0:1], device), gates[:, 0:1],
-                                kernels.fold_scale(block.ffn_norm1, mod[:, 2:3], device), gates[:, 1:2])
+            cache[id(adaln)] = (kernels.fold_scale(block.attention_norm1, mod[:, 0:1], device, consts), gates[:, 0:1],
+                                kernels.fold_scale(block.ffn_norm1, mod[:, 2:3], device, consts), gates[:, 1:2])
         out.append((start, end, cache[id(adaln)]))
     return out
 
@@ -271,13 +271,14 @@ class Block(nn.Module):
             self.cross_attn_norm2 = RMSNorm(dim, eps)
             self.cross_attn_gate = nn.Parameter(torch.zeros(1))
 
-    def forward(self, x, freqs, spans, context, dtype, transformer_options=None, fused=False):
+    def forward(self, x, freqs, spans, context, dtype, transformer_options=None, fused=False, consts=None):
         """x (B, N, D) residual stream; spans [(start, end, adaln)] cover x, adaln (B, 256) the time embedding that
         modulates those rows; context (B, M, cap_feat_dim) for an injection block. Fused: x is in dtype and is
-        updated in place."""
+        updated in place; consts (kernels.Constants) holds the forward's norm constants, or None to compute them
+        per call."""
         if fused:
-            return self.forward_fused(x, freqs, _modulations_fused(self, spans, x.device), context,
-                                      transformer_options)
+            return self.forward_fused(x, freqs, _modulations_fused(self, spans, x.device, consts), context,
+                                      transformer_options, consts)
         mods = _modulations(self, spans)
         y = self.attention(_modulate(self.attention_norm1(x), mods, 0, dtype), freqs, transformer_options)
         x = _gated(x, self.attention_norm2(project(self.attention.out, y, dtype)), mods, 1)
@@ -289,20 +290,19 @@ class Block(nn.Module):
         y = self.feed_forward.hidden(_modulate(self.ffn_norm1(x), mods, 2, dtype))
         return _gated(x, self.ffn_norm2(project(self.feed_forward.w2, y, dtype)), mods, 3)
 
-    def forward_fused(self, x, freqs, mods, context, transformer_options=None):
+    def forward_fused(self, x, freqs, mods, context, transformer_options=None, consts=None):
         """The block on comfy-kitchen's kernels: the same arithmetic as forward, in x's dtype, x updated in place;
         mods from _modulations_fused."""
         y = self.attention(_modulated_fused(self.attention_norm1, x, mods, 0), freqs, transformer_options, fused=True)
-        x = kernels.gated_residual_(x, kernels.rms_norm(self.attention_norm2, self.attention.out(y)), _gates(mods, 1))
+        x = kernels.gated_residual_(x, kernels.rms_norm(self.attention_norm2, self.attention.out(y), consts),
+                                    _gates(mods, 1))
         if self.cross_attention is not None:
-            y = self.cross_attention(kernels.rms_norm(self.cross_attn_norm1, x), context, transformer_options,
-                                     fused=True)
-            y = kernels.rms_norm(self.cross_attn_norm2, self.cross_attention.to_out(y))
-            gate = kernels.constant(self, f"_fibo2_gate_{x.dtype}", self.cross_attn_gate,
-                                    lambda g: torch.tanh(kernels.cast_to(g, x.dtype, x.device)))
-            x.addcmul_(y, gate)
+            y = self.cross_attention(kernels.rms_norm(self.cross_attn_norm1, x, consts), context, transformer_options,
+                                     True, consts)
+            y = kernels.rms_norm(self.cross_attn_norm2, self.cross_attention.to_out(y), consts)
+            x.addcmul_(y, kernels.gate_tanh(self.cross_attn_gate, x.dtype, x.device, consts))
         y = self.feed_forward.forward_fused(_modulated_fused(self.ffn_norm1, x, mods, 2))
-        return kernels.gated_residual_(x, kernels.rms_norm(self.ffn_norm2, y), _gates(mods, 3))
+        return kernels.gated_residual_(x, kernels.rms_norm(self.ffn_norm2, y, consts), _gates(mods, 3))
 
 
 class PerceiverLayer(nn.Module):
@@ -315,14 +315,15 @@ class PerceiverLayer(nn.Module):
         self.ffn_norm = RMSNorm(dim, eps)
         self.ffn = FeedForward(dim, ffn_dim, fused_ffn)
 
-    def forward(self, x, context, dtype, transformer_options=None, fused=False):
+    def forward(self, x, context, dtype, transformer_options=None, fused=False, consts=None):
         if fused:
             # out of place: the first layer's x is the expanded latent queries
-            y = self.cross_attention(kernels.rms_norm(self.cross_attn_norm, x), context, transformer_options, True)
+            y = self.cross_attention(kernels.rms_norm(self.cross_attn_norm, x, consts), context, transformer_options,
+                                     True, consts)
             x = x + self.cross_attention.to_out(y)
-            y = kernels.rms_norm(self.self_attn_norm, x)
-            x = x + self.self_attention.to_out(self.self_attention(y, y, transformer_options, True))
-            return x + self.ffn.forward_fused(kernels.rms_norm(self.ffn_norm, x))
+            y = kernels.rms_norm(self.self_attn_norm, x, consts)
+            x = x + self.self_attention.to_out(self.self_attention(y, y, transformer_options, True, consts))
+            return x + self.ffn.forward_fused(kernels.rms_norm(self.ffn_norm, x, consts))
         y = self.cross_attention(self.cross_attn_norm(x).to(dtype), context, transformer_options)
         x = x + project(self.cross_attention.to_out, y, dtype).to(x.dtype)
         y = self.self_attn_norm(x).to(dtype)
@@ -340,13 +341,13 @@ class Perceiver(nn.Module):
                                      for _ in range(num_layers)])
         self.norm_out = RMSNorm(dim, eps)
 
-    def forward(self, context, num_gist, dtype, res_dtype, transformer_options=None, fused=False):
+    def forward(self, context, num_gist, dtype, res_dtype, transformer_options=None, fused=False, consts=None):
         """context (B, M, cap_feat_dim) -> gist tokens (B, num_gist, D) in float32 (fused: in res_dtype)."""
         queries = kernels.cast_to(self.latent_queries, dtype, context.device)[:num_gist].to(res_dtype)
         x = queries[None].expand(context.shape[0], -1, -1)
         for layer in self.layers:
-            x = layer(x, context, dtype, transformer_options, fused)
-        return kernels.rms_norm(self.norm_out, x) if fused else self.norm_out(x)
+            x = layer(x, context, dtype, transformer_options, fused, consts)
+        return kernels.rms_norm(self.norm_out, x, consts) if fused else self.norm_out(x)
 
 
 class TimestepEmbedder(nn.Module):
@@ -393,6 +394,9 @@ class Fibo2DiT(nn.Module):
         self.final_layer = FinalLayer(dim, in_channels)
         # the path of the last forward, as reported in the console (kernels.report)
         self.reported_path = None
+        # every norm and cross-attention gate, for the fused path's per-forward constants (kernels.Constants)
+        self.norms = [m for m in self.modules() if isinstance(m, RMSNorm)]
+        self.gates = [b.cross_attn_gate for b in self.layers if b.cross_attention is not None]
 
     def forward(self, x, timestep, context, transformer_options=None, ref_latents=None, **kwargs):
         """x (B, 128, H, W) latents, timestep (B,) = sigma, context (B, T, text_dim + 1) from the text engine (or
@@ -422,6 +426,7 @@ class Fibo2DiT(nn.Module):
         res_dtype = torch.float32 if dtype == torch.float16 else dtype
         fused = kernels.fused(x, dtype)
         self.reported_path = kernels.report(self, x, dtype, fused, self.reported_path)
+        consts = kernels.Constants(self.norms, self.gates, dtype, device) if fused else None
 
         # the image and the reference tokens are noisy and clean: zero modulates the gist and the references
         timestep = timestep.to(device=device, dtype=torch.float32)
@@ -443,11 +448,12 @@ class Fibo2DiT(nn.Module):
         n_img = h * w
         spans = [(0, n_img, noisy)] + ([(n_img, img.shape[1], zero)] if refs else [])
         for block in self.noise_refiner:
-            img = block(img, freqs[num_gist:], spans, None, dtype, transformer_options, fused)
+            img = block(img, freqs[num_gist:], spans, None, dtype, transformer_options, fused, consts)
 
         # the Perceiver reads the first text bundle, each injection block its own
         bundles = context.to(device=device, dtype=dtype).chunk(1 + len(self.injection_layers), dim=-1)
-        gist = self.perceiver(bundles[0], num_gist, dtype, res_dtype, transformer_options, fused).to(res_dtype)
+        gist = self.perceiver(bundles[0], num_gist, dtype, res_dtype, transformer_options, fused,
+                              consts).to(res_dtype)
         text = dict(zip(self.injection_layers, bundles[1:]))
 
         x = torch.cat((gist, img), dim=1)
@@ -455,7 +461,7 @@ class Fibo2DiT(nn.Module):
         end = num_gist + n_img
         spans = [(0, num_gist, zero), (num_gist, end, noisy)] + ([(end, x.shape[1], zero)] if refs else [])
         for i, block in enumerate(self.layers):
-            x = block(x, freqs, spans, text.get(i), dtype, transformer_options, fused)
+            x = block(x, freqs, spans, text.get(i), dtype, transformer_options, fused, consts)
 
         out = self.final_layer(x[:, num_gist:end], noisy, dtype)
         return out.transpose(1, 2).reshape(b, self.in_channels, h, w)

@@ -63,28 +63,62 @@ def test_fold_scale_is_one_kernel_of_the_same_value():
 
 
 @torch.no_grad()
-def test_constants_follow_the_weight():
-    n = norm(64)
-    first = kernels.affine_scale(n, torch.float32, "cpu")
-    torch.testing.assert_close(first, n.weight - 1.0, **TOL)
-    assert kernels.affine_scale(n, torch.float32, "cpu") is first  # cached
-    assert kernels.affine_scale(n, torch.float64, "cpu") is not first  # per dtype
-    # written in place (Forge baking a LoRA into the weight): recomputed
-    n.weight.mul_(2.0)
-    second = kernels.affine_scale(n, torch.float32, "cpu")
-    assert second is not first
-    torch.testing.assert_close(second, n.weight - 1.0, **TOL)
-    # replaced: recomputed
-    n.weight = torch.nn.Parameter(torch.full((64,), 1.5))
-    torch.testing.assert_close(kernels.affine_scale(n, torch.float32, "cpu"), torch.full((64,), 0.5), **TOL)
-    # the fold's w - 1 is kept the same way, and follows a replaced weight too
+def test_constants_hold_every_norm_and_gate_of_a_forward():
+    norms = [norm(64, seed=i) for i in range(3)] + [norm(16, seed=9)]
+    gates = [torch.nn.Parameter(torch.tensor([0.7])), torch.nn.Parameter(torch.tensor([-0.2]))]
+    norms[1].weight_function.append(lambda w: w * 2.0)  # an on-the-fly LoRA patch: left out, computed per call
+    consts = kernels.Constants(norms, gates, torch.float32, torch.device("cpu"))
+    assert norms[1] not in consts.minus_one and len(consts.minus_one) == 3
+    for n in (norms[0], norms[2], norms[3]):
+        torch.testing.assert_close(consts.minus_one[n], n.weight - 1.0, **TOL)
+        torch.testing.assert_close(consts.weight32[n], n.weight, **TOL)
+        assert kernels.affine_scale(n, torch.float32, "cpu", consts) is consts.minus_one[n]
+    torch.testing.assert_close(kernels.affine_scale(norms[1], torch.float32, "cpu", consts), norms[1].weight * 2.0 - 1.0,
+                               **TOL)
+    for g in gates:
+        torch.testing.assert_close(kernels.gate_tanh(g, torch.float32, "cpu", consts), torch.tanh(g), **TOL)
+    # the fold through the constants is the same value as without them
     scale = randn(2, 1, 64, seed=2) * 0.5
-    torch.testing.assert_close(kernels.fold_scale(n, scale, "cpu"), 1.5 * (1.0 + scale) - 1.0, **TOL)
-    n.weight = torch.nn.Parameter(torch.full((64,), 0.5))
-    torch.testing.assert_close(kernels.fold_scale(n, scale, "cpu"), 0.5 * (1.0 + scale) - 1.0, **TOL)
-    # a state dict load writes in place as well
-    n.load_state_dict({"weight": torch.full((64,), 2.0)})
-    torch.testing.assert_close(kernels.affine_scale(n, torch.float32, "cpu"), torch.full((64,), 1.0), **TOL)
+    torch.testing.assert_close(kernels.fold_scale(norms[0], scale, "cpu", consts),
+                               kernels.fold_scale(norms[0], scale, "cpu"), **TOL)
+    # another dtype than the constants were built for falls back to a per-call value
+    assert kernels.affine_scale(norms[0], torch.float64, "cpu", consts).dtype == torch.float64
+
+
+@torch.no_grad()
+def test_fused_dit_reads_the_live_weights_each_forward():
+    # Forge patches LoRAs in place when asked to, and its weights are inference tensors with no version counter: the
+    # constants are read from the weights at every forward, so an in-place write shows in the next one
+    from tests.test_transformer import inputs, models
+
+    _, ours = models()
+    x, context = inputs(batch=1)
+    sigma = torch.tensor([0.7])
+    with fused_path():
+        before = ours.run(x, sigma, context)
+    ours.layers[0].attention_norm2.weight.mul_(1.5)
+    ours.layers[1].cross_attn_gate.fill_(0.2) if ours.layers[1].cross_attention is not None else None
+    expected = ours.run(x, sigma, context)
+    with fused_path():
+        after = ours.run(x, sigma, context)
+    assert not torch.allclose(after, before)
+    torch.testing.assert_close(after, expected, rtol=1e-4, atol=1e-5)
+
+
+@torch.no_grad()
+def test_fused_dit_runs_on_inference_tensors():
+    # a model built under inference mode, as Forge loads its weights
+    from tests.test_transformer import inputs, models
+
+    with torch.inference_mode():
+        _, ours = models()
+        assert ours.layers[0].attention_norm1.weight.is_inference()
+        x, context = inputs(batch=1)
+        sigma = torch.tensor([0.7])
+        expected = ours.run(x, sigma, context)
+        with fused_path():
+            actual = ours.run(x, sigma, context)
+    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=1e-5)
 
 
 @torch.no_grad()
