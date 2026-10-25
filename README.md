@@ -4,7 +4,7 @@
 
 [![Forge Neo](https://img.shields.io/badge/Forge-Neo-blue)](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)
 [![Gradio](https://img.shields.io/badge/Gradio-4.40.0-orange)](https://gradio.app/)
-[![Version](https://img.shields.io/badge/Version-0.1.0-brightgreen)](https://github.com/eduardoabreu81/fibo2-forge-neo)
+[![Version](https://img.shields.io/badge/Version-0.2.0-brightgreen)](https://github.com/eduardoabreu81/fibo2-forge-neo)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 
 > **Extension for [Stable Diffusion WebUI Forge - Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)**
@@ -30,6 +30,11 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 ---
 
 ## 🆕 What's New
+
+### v0.2.0 - Fused Kernels
+
+- **Faster steps** - the DiT runs on comfy-kitchen's fused kernels, as ComfyUI does for FIBO 2.0: norms, RoPE and gated residuals in single passes, and SwiGLU folded into the INT8 GEMM - see [Fused Kernels](#-fused-kernels)
+- **[FIBO 2] Fused kernels** setting - off runs the previous path, for comparisons
 
 ### v0.1.0 - First Release
 
@@ -102,6 +107,14 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 - Set **Steps** to 4 and **CFG** to 1, as for Edit Turbo
 - With the same seed, Dev with the LoRA gives nearly the same picture as Edit Turbo
 
+### ⚡ Fused Kernels
+
+- The DiT block runs on [comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen)'s fused kernels, the ones ComfyUI uses for FIBO 2.0: each modulated norm is one pass, the q/k norms and RoPE are one pass, gated residuals are updated in place, and SwiGLU is folded into the INT8 GEMM that follows it
+- **INT8 ConvRot safetensors** (`fibo2_*_int8_convrot`) get all of it, the SwiGLU fold included; **bf16 safetensors** get the norm, RoPE and residual fusions; **GGUF** loads as before and is not tuned for
+- Runs on CUDA when Forge Neo computes in bf16 or float32; a card Forge Neo runs in float16 (RTX 20 series) keeps the previous path, unchanged
+- The console says which path is active when the model first runs: `[FIBO 2] fused comfy-kitchen kernels: on (bfloat16), SwiGLU folded into the INT8 ConvRot GEMM: yes`
+- **Settings → Stable Diffusion → [FIBO 2] Fused kernels** turns it off, for A/B pictures and timings, and for bug reports (the two paths give the same picture up to bf16 rounding)
+
 ### 🛡️ Safe by Design
 
 - Changes no Forge Neo file - remove the extension and everything is as it was
@@ -131,7 +144,7 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 7. Pick the **fibo2** UI preset, the checkpoint, and the text encoder and autoencoder under **VAE / Text Encoder**
 
 > [!Note]
-> Tested with the INT8 files of Dev and Edit Turbo, Abiray's Edit Turbo Q4_K_M GGUF and vantagewithai's Dev Q4_K_M GGUF, on an RTX 2070 (8 GB), Forge Neo 2.31: text-to-image at 1024x1024 and 1424x800, text rendering with accents, edits of one picture, of two (ImageStitch) and of a painted area (Inpaint), and the turbo LoRA with Dev in INT8 and in GGUF. The BF16 files have not been tested yet.
+> Tested with the INT8 files of Dev and Edit Turbo, Abiray's Edit Turbo Q4_K_M GGUF and vantagewithai's Dev Q4_K_M GGUF, on an RTX 2070 (8 GB), Forge Neo 2.31: text-to-image at 1024x1024 and 1424x800, text rendering with accents, edits of one picture, of two (ImageStitch) and of a painted area (Inpaint), and the turbo LoRA with Dev in INT8 and in GGUF. The BF16 files have not been tested yet. The fused kernels of v0.2.0 match the previous path in the CPU tests; their live check on a bf16-capable card is pending.
 
 ---
 
@@ -164,6 +177,8 @@ The shift follows the picture's size, as in Bria's pipeline: 1.15 at 1024x1024, 
 - **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)** by Bria - the model and its reference pipeline
 - **[ComfyUI](https://github.com/Comfy-Org/ComfyUI)** by comfyanonymous and Comfy-Org - the FIBO 2.0 implementation this port follows ([PR #17240](https://github.com/Comfy-Org/ComfyUI/pull/17240)), and the INT8 files
 - **[Qwen3-VL](https://huggingface.co/Qwen)** by the Qwen team - the text encoder
+- **[comfy-kitchen](https://github.com/Comfy-Org/comfy-kitchen)** by Comfy-Org - the fused kernels, and ComfyUI's FIBO 2.0 model for the way it uses them
+- **[moss-image-forge-neo](https://github.com/eduardoabreu81/moss-image-forge-neo)** PR #3 by RichyRich515 - the Forge-side pattern for the fused block
 
 The FIBO 2.0 weights are © BRIA AI under the [Creative Commons Attribution-NonCommercial 4.0](https://creativecommons.org/licenses/by-nc/4.0/) license: non-commercial use only. This extension does not include them.
 
