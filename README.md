@@ -82,6 +82,7 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 
 - Put the picture in img2img, write what to change (`Add a red knitted scarf around the neck of the fox`) and set **Denoising strength** to 1 - everything you did not ask to change stays as it was
 - Adding, removing and swapping things works best; changing the light of the whole scene (day to night) barely changes it
+- Or in txt2img: add the picture through ImageStitch; with a single picture the result comes out at about 1 megapixel in its proportions, whatever the size sliders say, as Wan2GP does (the console says which size it used). Turn this off under **Settings → Stable Diffusion → [FIBO 2] Reference Sets the Size** to keep the sliders' size
 - More pictures through ImageStitch: the img2img picture is `<image_1>`, the ones you add are `<image_2>`, `<image_3>`... - for example `Put the sleeping fox from <image_1> on the sidewalk in front of the bakery in <image_2>`
 - Each extra picture is used at about 1 megapixel, as upstream does, so it costs time: on an RTX 2070 (8 GB) an edit with two pictures took about 10 minutes, against 40 seconds with one
 - A JSON prompt can carry the instruction too: `{"edit_instruction": "...", "short_description": "...", ...}`
