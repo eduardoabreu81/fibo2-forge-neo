@@ -7,6 +7,8 @@
 # prompt's conditioning brings them to upstream's sizes, shows them to Qwen3-VL and encodes them as the DiT's
 # reference latents (dynamic_args.ref_latents), which the negative pass uses too.
 
+import contextlib
+
 import torch
 from backend import memory_management
 from backend.args import dynamic_args
@@ -23,6 +25,26 @@ from .text_engine import Fibo2TextEngine
 # the loader's model flags, set from substrings of the checkpoint path and of the configuration folder's path; none
 # of them is FIBO 2, and "klein" would swap the Automatic schedule for FLUX.2's
 LOADER_FLAGS = ("kontext", "edit", "qwen21", "klein", "wan", "pid", "anima", "krea2", "moss")
+
+
+@contextlib.contextmanager
+def posterior_mean():
+    """While open, Forge's VAE encodes to the mean of its posterior instead of a sample of it. Without the class it
+    patches (another Forge Neo), encoding samples as before."""
+    try:
+        from backend.nn import vae as forge_vae
+    except ImportError:
+        forge_vae = None
+    distribution = getattr(forge_vae, "DiagonalGaussianDistribution", None)
+    if distribution is None or not hasattr(distribution, "mode"):
+        yield
+        return
+    sample = distribution.sample
+    distribution.sample = distribution.mode
+    try:
+        yield
+    finally:
+        distribution.sample = sample
 
 
 class Fibo2Engine(ForgeDiffusionEngine):
@@ -85,9 +107,12 @@ class Fibo2Engine(ForgeDiffusionEngine):
 
     @torch.inference_mode()
     def encode_reference(self, image: torch.Tensor) -> torch.Tensor:
-        """(1, H, W, 3) in [0, 1] -> its latent (1, 128, H / 16, W / 16), as Forge encodes an img2img image."""
+        """(1, H, W, 3) in [0, 1] -> its latent (1, 128, H / 16, W / 16), as Forge encodes an img2img image, but the
+        mean of the VAE's posterior, as ComfyUI encodes it: Forge samples it with an unseeded torch.randn, so the same
+        picture gave a different edit depending on what ran before."""
         x = image.movedim(-1, 1).mul(2.0).sub(1.0)
-        return ForgeDiffusionEngine.encode_first_stage(self, x).cpu()
+        with posterior_mean():
+            return ForgeDiffusionEngine.encode_first_stage(self, x).cpu()
 
     def set_shift(self, shift: float = None, width: int = 1024, height: int = 1024, *args, **kwargs):
         # Forge calls this before every sampling pass (hires fix too) with its size; Forge's Qwen-Image 2.1 engine
