@@ -73,8 +73,9 @@ class Fibo2Engine(ForgeDiffusionEngine):
                 setattr(dynamic_args, flag, False)
         self.is_fibo2 = True
         # the result's (width, height), set by the extension's script (scripts/fibo2.py) as each generation starts:
-        # a single image to edit is cropped to it, as upstream does
+        # a single image to edit is cropped to it, as upstream does, or with fibo2_fill fitted inside it on grey
         self.fibo2_output_size = None
+        self.fibo2_fill = False
         # Forge's LoRA extension is imported by now, whatever the extensions' load order was
         lora.ensure_installed()
 
@@ -96,7 +97,7 @@ class Fibo2Engine(ForgeDiffusionEngine):
             dynamic_args.ref_latents.clear()
             return self.text_engine_fibo2(prompt)
 
-        images = caption.edit_images(images, *(self.fibo2_output_size or (None, None)))
+        images = caption.edit_images(images, *(self.fibo2_output_size or (None, None)), fill=self.fibo2_fill)
         mask = masking.current()
         if mask is not None and len(images) == 1:
             # a masked edit: as upstream, of one picture only, its masked region greyed out for Qwen3-VL and the VAE

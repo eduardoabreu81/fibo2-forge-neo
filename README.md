@@ -35,6 +35,7 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 
 - **Faster steps** - the DiT runs on comfy-kitchen's fused kernels, as ComfyUI does for FIBO 2.0: norms, RoPE and gated residuals in single passes, and SwiGLU folded into the INT8 GEMM - see [Fused Kernels](#-fused-kernels)
 - **[FIBO 2] Fused kernels** setting - off runs the previous path, for comparisons
+- **A new shape for a picture** - a portrait made landscape, for example: the picture keeps its place and the model draws the rest of the scene around it - see [Changing the Shape](#-changing-the-shape)
 
 ### v0.1.0 - First Release
 
@@ -87,7 +88,7 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 
 - Put the picture in img2img, write what to change (`Add a red knitted scarf around the neck of the fox`) and set **Denoising strength** to 1 - everything you did not ask to change stays as it was
 - Adding, removing and swapping things works best; changing the light of the whole scene (day to night) barely changes it
-- Or in txt2img: add the picture through ImageStitch; with a single picture the result comes out at about 1 megapixel in its proportions, whatever the size sliders say, as Wan2GP does (the console says which size it used). Turn this off under **Settings → Stable Diffusion → [FIBO 2] Reference Sets the Size** to keep the sliders' size
+- Or in txt2img: add the picture through ImageStitch; with a single picture the result comes out at about 1 megapixel in its proportions, as Wan2GP does (the console says which size it used). If the size sliders have other proportions, such as 16:9 for a portrait, the result keeps the sliders' size and the model fills in the sides - see [Changing the Shape](#-changing-the-shape). Turn both off under **Settings → Stable Diffusion → [FIBO 2] Reference Sets the Size** to keep the sliders' size with the picture cropped to it
 - More pictures through ImageStitch: the img2img picture is `<image_1>`, the ones you add are `<image_2>`, `<image_3>`... - for example `Put the sleeping fox from <image_1> on the sidewalk in front of the bakery in <image_2>`
 - Each extra picture is used at about 1 megapixel, as upstream does, so it costs time: on an RTX 2070 (8 GB) an edit with two pictures took about 10 minutes, against 40 seconds with one
 - A JSON prompt can carry the instruction too: `{"edit_instruction": "...", "short_description": "...", ...}`
@@ -100,6 +101,17 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 
 - Change only part of the picture with **Inpaint**: paint the area, write the change (`Change her trench coat to a bright red wool coat`) and set Denoising strength to 1
 - The painted area is greyed out for the model, as in Bria's pipeline, and the rest of the picture stays as it was
+
+### 🧩 Changing the Shape
+
+<p align="center"><img src=".github/images/new-shape.jpg" alt="A portrait of a red-haired woman in a mustard sweater on a cobblestone street, and the same picture made 16:9, with more of the street and the shops drawn on both sides" width="720"></p>
+
+- Give a picture another shape, such as a portrait made landscape: the picture keeps its place in the middle, the model draws the rest of the scene around it, and the person stays the same
+- In txt2img: add the picture through ImageStitch and set the size sliders to the new shape (1424x800 for 16:9)
+- In img2img: pick **Resize and fill** and set the new size; the sides it would fill with stretched edges are drawn by the model instead
+- Say what to draw: `Extend the scene into the grey areas on both sides, continuing the cobblestone street and the old shop fronts. Keep the woman exactly as she is.`
+- With Inpaint, the painted area and the sides change together; put the extension first in the prompt (`Extend the scene into the grey areas on both sides, and make her sweater dark green`), as with the other order Edit Turbo can leave one side grey
+- Works with Dev too; Edit Turbo takes about 40 seconds on an RTX 2070 (8 GB)
 
 ### ⚡ Turbo LoRA
 
@@ -165,7 +177,7 @@ The shift follows the picture's size, as in Bria's pipeline: 1.15 at 1024x1024, 
 
 - Long, detailed captions are what the model knows best; a language model can turn a sentence into a VGL caption
 - FIBO 2.0 does not know characters by name - "Hatsune Miku" gives an unrelated girl with the name written on the screens - but describe her (long turquoise twin tails, grey top with a turquoise tie, headset microphone...) and she comes out right
-- For edits, use **Crop and resize** in img2img and set its size to about 1 megapixel in the picture's proportions (1024x1024 for a square picture, 1216x896 for a 4:3 one); at other sizes edits can zoom in on what changes or lose detail, and the console says which size to use
+- For edits, use **Crop and resize** in img2img and set its size to about 1 megapixel in the picture's proportions (1024x1024 for a square picture, 1216x896 for a 4:3 one); at other sizes edits can zoom in on what changes or lose detail, and the console says which size to use. For a new shape, use **Resize and fill** instead
 - New text encoder files appear in the list after a restart of Forge Neo
 - Before uninstalling, switch the UI preset to another one
 

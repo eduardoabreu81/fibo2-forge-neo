@@ -29,6 +29,18 @@ def test_mask_of_another_size_is_brought_to_the_picture():
     assert (out[0, :, :16] > 0).all() and (out[0, :, 16:] == 0).all()
 
 
+def test_fill_mask_marks_the_sides_and_reaches_into_the_picture():
+    mask = np.array(masking.fill_mask((100, 40), (30, 0, 70, 40), overlap=4))
+    assert mask.shape == (40, 100)
+    assert (mask[:, :34] == 255).all() and (mask[:, 66:] == 255).all()
+    assert (mask[:, 34:66] == 0).all()
+    # no overlap on the edges the picture reaches: top and bottom stay the picture's
+    mask = np.array(masking.fill_mask((40, 100), (0, 30, 40, 70), overlap=4))
+    assert (mask[34:66] == 0).all() and (mask[:34] == 255).all() and (mask[66:] == 255).all()
+    # a picture that fills the result: nothing to fill
+    assert not np.array(masking.fill_mask((64, 64), (0, 0, 64, 64))).any()
+
+
 def test_state():
     masking.set_mask(None)
     assert masking.current() is None

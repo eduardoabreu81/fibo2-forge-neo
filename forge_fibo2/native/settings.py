@@ -4,7 +4,8 @@
 # img2img image (and the ones ImageStitch adds) are images to edit, and the prompt is the edit instruction; off,
 # img2img is plain image-to-image.
 # "[FIBO 2] Reference Sets the Size": on, a txt2img edit of a single ImageStitch picture comes out about 1 MP in the
-# picture's proportions, as Wan2GP's default for Edit Turbo; off, at the size of txt2img's sliders.
+# picture's proportions, as Wan2GP's default for Edit Turbo, or, when the sliders ask for other proportions, at
+# their size with the sides around the picture filled in; off, at the size of txt2img's sliders, the picture cropped.
 # "[FIBO 2] Fused kernels": on, the DiT runs on comfy-kitchen's fused kernels where it can (kernels.py); off, the
 # eager path, the same code as before the fused one existed, for A/B pictures and timings and for bug reports.
 
@@ -53,7 +54,8 @@ def register() -> None:
         shared.opts.add_option(OPTION, info)
     if SIZE_OPTION not in shared.opts.data_labels:
         info = OptionInfo(SIZE_DEFAULT, SIZE_LABEL, section=SECTION, category_id=CATEGORY)
-        info = info.info("txt2img with one ImageStitch picture: enable about 1 MP in its proportions ; disable the sliders' size")
+        info = info.info("txt2img with one ImageStitch picture: enable about 1 MP in its proportions, or the sliders' "
+                         "size with the sides filled in when theirs differ ; disable the sliders' size, cropped")
         shared.opts.add_option(SIZE_OPTION, info)
     if FUSED_OPTION not in shared.opts.data_labels:
         info = OptionInfo(FUSED_DEFAULT, FUSED_LABEL, section=SECTION, category_id=CATEGORY)

@@ -154,6 +154,37 @@ def test_edit_images_sizes():
     assert [tuple(i.shape) for i in two] == [(1, 816, 1360, 3), (1, 1024, 1024, 3)]
 
 
+def test_same_proportions():
+    assert caption.same_proportions((800, 1424), (800, 1424))
+    assert caption.same_proportions((1600, 1200), (1184, 880))
+    assert not caption.same_proportions((800, 1424), (1424, 800))
+    assert not caption.same_proportions((800, 1424), (1024, 1024))
+
+
+def test_fill_box_is_where_resize_and_fill_puts_the_picture():
+    # Forge's resize_image mode 2: a portrait into 16:9 sits in the middle at full height
+    assert caption.fill_box((800, 1424), (1424, 800)) == (488, 0, 937, 800)
+    # a landscape into a square at full width
+    assert caption.fill_box((1424, 800), (1024, 1024)) == (0, 225, 1024, 800)
+    assert caption.fill_box((1024, 1024), (1024, 1024)) == (0, 0, 1024, 1024)
+
+
+def test_pad_fits_the_picture_inside_on_grey():
+    image = torch.ones(1, 1424, 800, 3)
+    out = caption.pad(image, 1424, 800)
+    assert out.shape == (1, 800, 1424, 3)
+    left, _, right, _ = caption.fill_box((800, 1424), (1424, 800))
+    assert torch.allclose(out[0, :, :left], torch.tensor(128 / 255))
+    assert torch.allclose(out[0, :, right:], torch.tensor(128 / 255))
+    assert (out[0, :, left + 2:right - 2] == 1.0).all()
+    same = torch.rand(1, 64, 96, 3)
+    assert caption.pad(same, 96, 64) is same
+    # edit_images: one image fitted instead of cropped, several unchanged by fill
+    assert caption.edit_images([image], 1424, 800, fill=True)[0].shape == (1, 800, 1424, 3)
+    two = caption.edit_images([torch.rand(1, 600, 1000, 3), torch.rand(1, 900, 900, 3)], 1424, 800, fill=True)
+    assert [tuple(i.shape) for i in two] == [(1, 816, 1360, 3), (1, 1024, 1024, 3)]
+
+
 def test_fit_crops_the_center():
     image = torch.zeros(1, 100, 300, 3)
     image[:, :, 100:200] = 1.0

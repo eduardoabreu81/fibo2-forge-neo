@@ -48,7 +48,9 @@ if ENABLED:
         """No UI: hands the result's size and img2img's inpaint mask, as Forge prepared it for the picture, to the
         FIBO 2 engine, which crops the picture to edit to that size and greys the masked region out (masking.py);
         says in the console when the size does not suit an edit. In txt2img, a single ImageStitch picture sets the
-        result's size."""
+        result's size, or, where the sliders' proportions are other than its own, is fitted inside their size with
+        the sides masked for the edit to fill in; img2img's "Resize and fill" masks the sides it fills the same
+        way."""
 
         def title(self):
             return "FIBO 2 masked edit"
@@ -60,6 +62,7 @@ if ENABLED:
             # every generation starts without a mask; img2img's inpaint sets one below, during p.init
             masking.set_mask(None)
             if getattr(p.sd_model, "is_fibo2", False):
+                p.sd_model.fibo2_fill = False
                 if not self.is_img2img and settings.references_enabled() and settings.reference_sets_size():
                     self.size_from_reference(p)
                 p.sd_model.fibo2_output_size = (p.width, p.height)
@@ -72,10 +75,22 @@ if ENABLED:
             pictures = stitched(p)
             if len(pictures) != 1:
                 return
-            better = caption.size_advice(pictures[0].size, (p.width, p.height))
+            picture, size = pictures[0].size, (p.width, p.height)
+            if not caption.same_proportions(picture, size):
+                # other proportions, as a portrait into 16:9: the sliders' size, the picture fitted inside it and
+                # the sides filled in, as Bria's outpainting template does (a size of the picture's own would undo
+                # the change the sliders ask for, and a crop would cut the picture down)
+                p.sd_model.fibo2_fill = True
+                size = (max(16, p.width // 16 * 16), max(16, p.height // 16 * 16))
+                masking.set_mask(masking.fill_mask(size, caption.fill_box(picture, size)))
+                print(f"[FIBO 2] the {picture[0]}x{picture[1]} ImageStitch picture is fitted inside "
+                      f"{p.width}x{p.height} and the sides are filled in; for the picture's own proportions, set "
+                      f"the sliders to them")
+                return
+            better = caption.size_advice(picture, size)
             if better is not None:
                 print(f"[FIBO 2] txt2img size set to {better[0]}x{better[1]} from {p.width}x{p.height}, in the "
-                      f"proportions of the {pictures[0].size[0]}x{pictures[0].size[1]} ImageStitch picture; "
+                      f"proportions of the {picture[0]}x{picture[1]} ImageStitch picture; "
                       f"turn this off under Settings -> Stable Diffusion -> {settings.SIZE_LABEL}")
                 p.width, p.height = better
 
@@ -86,7 +101,29 @@ if ENABLED:
             if settings.references_enabled() and p.init_images:
                 region = pp.get("crop_region")
                 picture = (region[2] - region[0], region[3] - region[1]) if region else p.init_images[0].size
+                if p.resize_mode == 2 and region is None:
+                    box = caption.fill_box(picture, (p.width, p.height))
+                    if box != (0, 0, p.width, p.height):
+                        self.fill_sides(p, pp.get("image_mask"), masking.fill_mask((p.width, p.height), box))
+                        # the picture now has the result's proportions: only the size is left to advise on
+                        picture = (p.width, p.height)
                 self.advise(picture, (p.width, p.height))
+
+        @staticmethod
+        def fill_sides(p, mask, sides):
+            # "Resize and fill" stretches the picture's edges out to the result's proportions, which an edit would
+            # keep; masked, they are greyed out and filled in instead. Forge has made its latent mask and overlay
+            # from the inpaint mask already, so the sides join both: the latent mask is this same picture, drawn
+            # on in place, and the overlay would paste the stretched edges back over the result
+            if mask is None:
+                masking.set_mask(sides)
+                return
+            from PIL import Image, ImageChops
+
+            mask.paste(Image.new(mask.mode, mask.size, "white"), (0, 0), sides)
+            if p.mask_for_overlay is not None:
+                overlay = p.mask_for_overlay.convert("L")
+                p.mask_for_overlay = ImageChops.lighter(overlay, sides.resize(overlay.size))
 
         @staticmethod
         def advise(picture, size):

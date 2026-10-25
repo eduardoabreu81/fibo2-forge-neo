@@ -159,14 +159,29 @@ def crop(aspect_ratio, other):
     return round(1 - min(aspect_ratio / other, other / aspect_ratio), 9)
 
 
+def same_proportions(picture, size):
+    # within 5%: the share cropped away to fit one into the other
+    return crop(size[0] / size[1], picture[0] / picture[1]) <= 0.05
+
+
 def size_advice(picture, size, step=16):
     """A better (width, height) for editing a picture of size (width, height) into a result of size, or None when
     size is fine: about 1 MP (within 10%) and the picture's proportions (within 5%), as Edit Turbo was trained.
     Elsewhere edits tend to zoom in on what changes, or lose detail."""
-    aspect_ratio = picture[0] / picture[1]
-    if 0.9 <= size[0] * size[1] / (1024 * 1024) <= 1.1 and crop(size[0] / size[1], aspect_ratio) <= 0.05:
+    if 0.9 <= size[0] * size[1] / (1024 * 1024) <= 1.1 and same_proportions(picture, size):
         return None
-    return trained_size(aspect_ratio, step)
+    return trained_size(picture[0] / picture[1], step)
+
+
+def fill_box(picture, size):
+    """(left, top, right, bottom) of a picture of size (width, height) scaled to fit inside a result of size and
+    centered, where Forge's "Resize and fill" puts it (modules/images.py, resize_image mode 2)."""
+    width, height = size
+    ratio, picture_ratio = width / height, picture[0] / picture[1]
+    inner_width = width if ratio < picture_ratio else picture[0] * height // picture[1]
+    inner_height = height if ratio >= picture_ratio else picture[1] * width // picture[0]
+    left, top = width // 2 - inner_width // 2, height // 2 - inner_height // 2
+    return left, top, left + inner_width, top + inner_height
 
 
 def fit(image, width, height):
@@ -189,13 +204,28 @@ def fit(image, width, height):
     return torch.from_numpy(np.array(pil).astype(np.float32) / 255.0).unsqueeze(0)
 
 
-def edit_images(images, width=None, height=None):
+def pad(image, width, height):
+    """Scaled to fit inside width x height with Lanczos and centered on the (128, 128, 128) grey of a masked edit,
+    for the edit to fill the sides in; unchanged when it already is that size."""
+    if (image.shape[2], image.shape[1]) == (width, height):
+        return image
+    from PIL import Image
+
+    left, top, right, bottom = fill_box((image.shape[2], image.shape[1]), (width, height))
+    pil = Image.fromarray(np.clip(255.0 * image[0].cpu().numpy(), 0, 255).astype(np.uint8))
+    pil = pil.resize((right - left, bottom - top), resample=Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (width, height), (128, 128, 128))
+    canvas.paste(pil, (left, top))
+    return torch.from_numpy(np.array(canvas).astype(np.float32) / 255.0).unsqueeze(0)
+
+
+def edit_images(images, width=None, height=None, fill=False):
     """The images to edit at the sizes upstream gives them: a single one scaled and center cropped to the result's
     size, width x height (multiples of 16; its own size when not given), since the edit lines up with it pixel for
-    pixel; several, each to its own trained size."""
+    pixel, or with fill fitted inside it on grey; several, each to its own trained size."""
     images = [image[..., :3] for image in images]
     if len(images) == 1:
         h, w = images[0].shape[1], images[0].shape[2]
         width, height = width or w, height or h
-        return [fit(images[0], max(16, width // 16 * 16), max(16, height // 16 * 16))]
+        return [(pad if fill else fit)(images[0], max(16, width // 16 * 16), max(16, height // 16 * 16))]
     return [fit(image, *trained_size(image.shape[2] / image.shape[1])) for image in images]
