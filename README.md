@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/banner.jpg" alt="FIBO 2.0 for Forge Neo banner"/>
+</p>
+
 # 🖼️ FIBO 2 for Forge Neo
 
 <div align="center">
