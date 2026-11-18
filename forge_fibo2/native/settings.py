@@ -27,7 +27,7 @@ ROPE_OPTION = "fibo2_rope_scale"
 ROPE_DEFAULT = 1.0
 ROPE_LABEL = "[FIBO 2] RoPE scale"
 ROPE_AUTO_OPTION = "fibo2_rope_scale_auto"
-ROPE_AUTO_DEFAULT = False
+ROPE_AUTO_DEFAULT = True
 ROPE_AUTO_LABEL = "[FIBO 2] RoPE scale: Auto"
 # a page under Settings -> Extensions: a section with no category lands there
 SECTION = ("fibo2", "FIBO 2")
@@ -93,6 +93,6 @@ def register() -> None:
         shared.opts.add_option(ROPE_OPTION, info)
     if ROPE_AUTO_OPTION not in shared.opts.data_labels:
         info = OptionInfo(ROPE_AUTO_DEFAULT, ROPE_AUTO_LABEL, section=SECTION)
-        info = info.info("experimental: sets the scale from each pass's area (Hires fix too): 1 up to 1 MP, then the "
+        info = info.info("on by default: sets the scale from each pass's area (Hires fix too): 1 up to 1 MP, then the "
                          "square root of 1 MP over the area, never below 0.8 (0.82 at 1.5 MP, 0.8 from 1.56 MP)")
         shared.opts.add_option(ROPE_AUTO_OPTION, info)

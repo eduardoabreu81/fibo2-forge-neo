@@ -4,7 +4,7 @@
 
 [![Forge Neo](https://img.shields.io/badge/Forge-Neo-blue)](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)
 [![Gradio](https://img.shields.io/badge/Gradio-4.40.0-orange)](https://gradio.app/)
-[![Version](https://img.shields.io/badge/Version-0.3.1-brightgreen)](https://github.com/eduardoabreu81/fibo2-forge-neo)
+[![Version](https://img.shields.io/badge/Version-0.3.2-brightgreen)](https://github.com/eduardoabreu81/fibo2-forge-neo)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 
 > **Extension for [Stable Diffusion WebUI Forge - Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)**
@@ -31,6 +31,10 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 
 ## 🆕 What's New
 
+### v0.3.2 - Auto RoPE Scale by Default
+
+- **[FIBO 2] RoPE scale: Auto** is now on by default: pictures above 1 MP keep the framing of 1 MP; turn it off to use the slider
+
 ### v0.3.1 - RoPE Scale Calibrated
 
 - **Auto** now keeps the framing of 1 MP: the square root of 1 MP over the picture's area, never below 0.8 (0.8 from about 1.56 MP up), as tested at 2.2 and 4 MP
@@ -38,7 +42,7 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 
 ### v0.3.0 - Large Pictures
 
-- **[FIBO 2] RoPE scale** - ComfyUI's ScaleROPE for pictures well above 1 MP, which otherwise turn into a wider scene with smaller subjects; **Auto** (experimental, off by default) sets it from each pass's size - see [Large Pictures](#-large-pictures-rope-scale)
+- **[FIBO 2] RoPE scale** - ComfyUI's ScaleROPE for pictures well above 1 MP, which otherwise turn into a wider scene with smaller subjects; **Auto** sets it from each pass's size - see [Large Pictures](#-large-pictures-rope-scale)
 - **Settings moved** - every FIBO 2 setting is now under **Settings → Extensions → FIBO 2**; saved values carry over
 - **Repeatable edits** - the picture to edit is encoded to the VAE's mean, as ComfyUI does, so the same picture gives the same edit every time
 
@@ -129,8 +133,8 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 ### 📐 Large Pictures (RoPE scale)
 
 - Above its 1 MP training size, FIBO 2 composes a wider scene: the larger the picture, the smaller the people and things in it. The shift this extension sets from the picture's size keeps bodies in proportion, so they do not stretch as they can in ComfyUI
-- **Settings → Extensions → FIBO 2 → [FIBO 2] RoPE scale** (0.7 to 1) squeezes the image positions as ComfyUI's ScaleROPE node does, so a large picture keeps the framing of a 1 MP one; 0.75 to 0.8 suits 2 to 4 MP, and 1 (the default) changes nothing
-- **[FIBO 2] RoPE scale: Auto** (off by default, experimental) sets the scale from each pass's size, Hires fix included, and ignores the slider: 1 up to 1 MP, then the square root of 1 MP over the picture's area, never below 0.8 (0.82 at 1.5 MP, 0.8 from about 1.56 MP up)
+- **Settings → Extensions → FIBO 2 → [FIBO 2] RoPE scale** (0.7 to 1) squeezes the image positions as ComfyUI's ScaleROPE node does, so a large picture keeps the framing of a 1 MP one; 0.75 to 0.8 suits 2 to 4 MP, and 1 (the default) changes nothing; the slider applies only with Auto off
+- **[FIBO 2] RoPE scale: Auto** (on by default) sets the scale from each pass's size, Hires fix included, and ignores the slider: 1 up to 1 MP, then the square root of 1 MP over the picture's area, never below 0.8 (0.82 at 1.5 MP, 0.8 from about 1.56 MP up)
 - Lower scales smear and merge fine detail (0.6 breaks pictures at any size), which is why the slider stops at 0.7; the console and the infotext (`FIBO 2 RoPE scale`, `FIBO 2 Hires RoPE scale`) say which scale a picture used
 
 ### 🛡️ Safe by Design

@@ -56,8 +56,9 @@ def test_rope_options_set_elsewhere_win():
 
 
 def test_settings_outside_forge_are_the_defaults():
-    # no modules.shared in the CPU tests: Auto off, slider at 1
-    assert settings.rope_scale(2048, 2048) == 1.0
+    # no modules.shared in the CPU tests: Auto on, so 0.8 at 4 MP and 1 at 1 MP
+    assert settings.rope_scale(2048, 2048) == 0.8
+    assert settings.rope_scale(1024, 1024) == 1.0
 
 
 @torch.no_grad()
