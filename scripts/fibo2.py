@@ -76,8 +76,18 @@ if ENABLED:
             if better is not None:
                 print(f"[FIBO 2] txt2img size set to {better[0]}x{better[1]} from {p.width}x{p.height}, in the "
                       f"proportions of the {pictures[0].size[0]}x{pictures[0].size[1]} ImageStitch picture; "
-                      f"turn this off under Settings -> Stable Diffusion -> {settings.SIZE_LABEL}")
+                      f"turn this off under {settings.PAGE} -> {settings.SIZE_LABEL}")
                 p.width, p.height = better
+
+        def process_before_every_sampling(self, p, *args, **kwargs):
+            # Forge sets the pass's size on the engine (set_shift, so the RoPE scale too) just before this, for the
+            # first pass and for Hires fix; a scale other than 1 goes in the infotext, so A/B pictures say which
+            scale = getattr(p.sd_model, "fibo2_rope_scale", 1.0) if getattr(p.sd_model, "is_fibo2", False) else 1.0
+            key = "FIBO 2 Hires RoPE scale" if getattr(p, "is_hr_pass", False) else "FIBO 2 RoPE scale"
+            if scale != 1.0:
+                p.extra_generation_params[key] = f"{scale:.2f}"
+            else:
+                p.extra_generation_params.pop(key, None)
 
         def before_process_init_images(self, p, pp, *args, **kwargs):
             if not getattr(p.sd_model, "is_fibo2", False):

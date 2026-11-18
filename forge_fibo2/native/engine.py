@@ -121,6 +121,13 @@ class Fibo2Engine(ForgeDiffusionEngine):
         mu = shift_of(width, height)
         self.forge_objects.unet.model.predictor.set_parameters(shift=mu)
         memory_management.logger.debug(f"[FIBO 2] shift {mu:.4f} for {width}x{height}")
+        # the RoPE scale follows the same size, so a Hires fix pass gets its own (rope.py); on the DiT itself, which
+        # every clone of the UNet patcher shares, as the predictor's shift is
+        scale = settings.rope_scale(width, height)
+        self.forge_objects.unet.model.diffusion_model.rope_scale = scale
+        self.fibo2_rope_scale = scale
+        if scale != 1.0:
+            print(f"[FIBO 2] RoPE scale {scale:.2f} for {width}x{height}")
 
     @torch.inference_mode()
     def get_prompt_lengths_on_ui(self, prompt: str) -> tuple[int, int]:

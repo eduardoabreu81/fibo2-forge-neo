@@ -4,7 +4,7 @@
 
 [![Forge Neo](https://img.shields.io/badge/Forge-Neo-blue)](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)
 [![Gradio](https://img.shields.io/badge/Gradio-4.40.0-orange)](https://gradio.app/)
-[![Version](https://img.shields.io/badge/Version-0.2.0-brightgreen)](https://github.com/eduardoabreu81/fibo2-forge-neo)
+[![Version](https://img.shields.io/badge/Version-0.3.0-brightgreen)](https://github.com/eduardoabreu81/fibo2-forge-neo)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-green.svg)](LICENSE)
 
 > **Extension for [Stable Diffusion WebUI Forge - Neo](https://github.com/Haoming02/sd-webui-forge-classic/tree/neo)**
@@ -30,6 +30,12 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 ---
 
 ## 🆕 What's New
+
+### v0.3.0 - Large Pictures
+
+- **[FIBO 2] RoPE scale** - ComfyUI's ScaleROPE for pictures well above 1 MP, which otherwise come out stretched or with repeated subjects; **Auto** (experimental, off by default) sets it from each pass's size - see [Large Pictures](#-large-pictures-rope-scale)
+- **Settings moved** - every FIBO 2 setting is now under **Settings → Extensions → FIBO 2**; saved values carry over
+- **Repeatable edits** - the picture to edit is encoded to the VAE's mean, as ComfyUI does, so the same picture gives the same edit every time
 
 ### v0.2.0 - Fused Kernels
 
@@ -87,11 +93,11 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 
 - Put the picture in img2img, write what to change (`Add a red knitted scarf around the neck of the fox`) and set **Denoising strength** to 1 - everything you did not ask to change stays as it was
 - Adding, removing and swapping things works best; changing the light of the whole scene (day to night) barely changes it
-- Or in txt2img: add the picture through ImageStitch; with a single picture the result comes out at about 1 megapixel in its proportions, whatever the size sliders say, as Wan2GP does (the console says which size it used). Turn this off under **Settings → Stable Diffusion → [FIBO 2] Reference Sets the Size** to keep the sliders' size
+- Or in txt2img: add the picture through ImageStitch; with a single picture the result comes out at about 1 megapixel in its proportions, whatever the size sliders say, as Wan2GP does (the console says which size it used). Turn this off under **Settings → Extensions → FIBO 2 → [FIBO 2] Reference Sets the Size** to keep the sliders' size
 - More pictures through ImageStitch: the img2img picture is `<image_1>`, the ones you add are `<image_2>`, `<image_3>`... - for example `Put the sleeping fox from <image_1> on the sidewalk in front of the bakery in <image_2>`
 - Each extra picture is used at about 1 megapixel, as upstream does, so it costs time: on an RTX 2070 (8 GB) an edit with two pictures took about 10 minutes, against 40 seconds with one
 - A JSON prompt can carry the instruction too: `{"edit_instruction": "...", "short_description": "...", ...}`
-- Turn editing off under **Settings → Stable Diffusion → [FIBO 2] Enable Reference** for plain image-to-image
+- Turn editing off under **Settings → Extensions → FIBO 2 → [FIBO 2] Enable Reference** for plain image-to-image
 - Edit Turbo also makes pictures from text alone, in 4 steps without CFG
 
 ### 🖌️ Masked Edits
@@ -113,7 +119,14 @@ Generate and edit with **[FIBO 2.0](https://huggingface.co/briaai/Fibo-2.0-dev)*
 - **INT8 ConvRot safetensors** (`fibo2_*_int8_convrot`) get all of it, the SwiGLU fold included; **bf16 safetensors** get the norm, RoPE and residual fusions; **GGUF** loads as before and is not tuned for
 - Runs on CUDA when Forge Neo computes in bf16 or float32; a card Forge Neo runs in float16 (RTX 20 series) keeps the previous path, unchanged
 - The console says which path is active when the model first runs: `[FIBO 2] fused comfy-kitchen kernels: on (bfloat16), SwiGLU folded into the INT8 ConvRot GEMM: yes`
-- **Settings → Stable Diffusion → [FIBO 2] Fused kernels** turns it off, for A/B pictures and timings, and for bug reports (the two paths give the same picture up to bf16 rounding)
+- **Settings → Extensions → FIBO 2 → [FIBO 2] Fused kernels** turns it off, for A/B pictures and timings, and for bug reports (the two paths give the same picture up to bf16 rounding)
+
+### 📐 Large Pictures (RoPE scale)
+
+- FIBO 2 takes a modest step past its 1 MP training size; much larger pictures, such as 1536x1536, can come out stretched or with repeated subjects
+- **Settings → Extensions → FIBO 2 → [FIBO 2] RoPE scale** (0.5 to 1) squeezes the image positions as ComfyUI's ScaleROPE node does, so a large picture spans the positions the model knows; 0.8 suits about 1536x1536, and 1 (the default) changes nothing
+- **[FIBO 2] RoPE scale: Auto** (off by default, experimental) sets the scale from each pass's size, Hires fix included, and ignores the slider: 1 up to 1.5 MP, then the square root of 1.5 MP over the picture's area (0.82 at 1536x1536, 0.61 at 2048x2048)
+- A scale below 1 can soften fine detail; the console and the infotext (`FIBO 2 RoPE scale`, `FIBO 2 Hires RoPE scale`) say which scale a picture used
 
 ### 🛡️ Safe by Design
 

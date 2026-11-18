@@ -1,12 +1,18 @@
 # FIBO 2 support for Forge Neo
-# Three options in Forge Neo's "Stable Diffusion" settings section, where its per-model options live.
-# "[FIBO 2] Enable Reference", next to Forge Neo's own "[Klein] / [Qwen 2.1] / [Krea2] Enable Reference": on, the
-# img2img image (and the ones ImageStitch adds) are images to edit, and the prompt is the edit instruction; off,
-# img2img is plain image-to-image.
+# Five options on a "FIBO 2" page of their own under Settings -> Extensions, as the MiniMax H3 extension keeps its own.
+# Their keys are the ones they had in the "Stable Diffusion" section, so saved values carry over.
+# "[FIBO 2] Enable Reference", as Forge Neo's own "[Klein] / [Qwen 2.1] / [Krea2] Enable Reference": on, the img2img
+# image (and the ones ImageStitch adds) are images to edit, and the prompt is the edit instruction; off, img2img is
+# plain image-to-image.
 # "[FIBO 2] Reference Sets the Size": on, a txt2img edit of a single ImageStitch picture comes out about 1 MP in the
 # picture's proportions, as Wan2GP's default for Edit Turbo; off, at the size of txt2img's sliders.
 # "[FIBO 2] Fused kernels": on, the DiT runs on comfy-kitchen's fused kernels where it can (kernels.py); off, the
 # eager path, the same code as before the fused one existed, for A/B pictures and timings and for bug reports.
+# "[FIBO 2] RoPE scale" and "[FIBO 2] RoPE scale: Auto": ComfyUI's ScaleROPE (rope.py), for pictures larger than
+# the model was trained on; 1.0 leaves the positions as they were. Auto sets the scale from each pass's size and
+# ignores the slider.
+
+from . import rope
 
 OPTION = "fibo2_do_reference"
 DEFAULT = True
@@ -17,46 +23,76 @@ SIZE_LABEL = "[FIBO 2] Reference Sets the Size"
 FUSED_OPTION = "fibo2_fused_kernels"
 FUSED_DEFAULT = True
 FUSED_LABEL = "[FIBO 2] Fused kernels"
-# Forge Neo's "Stable Diffusion" settings section and category, where its per-model options live
-SECTION = ("sd", "Stable Diffusion")
-CATEGORY = "sd"
+ROPE_OPTION = "fibo2_rope_scale"
+ROPE_DEFAULT = 1.0
+ROPE_LABEL = "[FIBO 2] RoPE scale"
+ROPE_AUTO_OPTION = "fibo2_rope_scale_auto"
+ROPE_AUTO_DEFAULT = False
+ROPE_AUTO_LABEL = "[FIBO 2] RoPE scale: Auto"
+# a page under Settings -> Extensions: a section with no category lands there
+SECTION = ("fibo2", "FIBO 2")
+# where the user finds them, for console messages
+PAGE = "Settings -> Extensions -> FIBO 2"
 
 
-def _get(option: str, default: bool) -> bool:
+def _get(option: str, default):
     try:
         from modules.shared import opts
 
-        return bool(getattr(opts, option, default))
+        return getattr(opts, option, default)
     except Exception:  # outside Forge Neo (CPU tests), or before the options exist
         return default
 
 
 def references_enabled() -> bool:
-    return _get(OPTION, DEFAULT)
+    return bool(_get(OPTION, DEFAULT))
 
 
 def reference_sets_size() -> bool:
-    return _get(SIZE_OPTION, SIZE_DEFAULT)
+    return bool(_get(SIZE_OPTION, SIZE_DEFAULT))
 
 
 def fused_enabled() -> bool:
-    return _get(FUSED_OPTION, FUSED_DEFAULT)
+    return bool(_get(FUSED_OPTION, FUSED_DEFAULT))
+
+
+def rope_scale(width: int, height: int) -> float:
+    """The RoPE scale for a sampling pass at width x height: Auto's from the size, else the slider's."""
+    if bool(_get(ROPE_AUTO_OPTION, ROPE_AUTO_DEFAULT)):
+        return rope.auto_scale(width, height)
+    try:
+        return rope.clamp(_get(ROPE_OPTION, ROPE_DEFAULT))
+    except (TypeError, ValueError):  # a hand-edited config.json
+        return ROPE_DEFAULT
 
 
 def register() -> None:
+    import gradio as gr
     from modules import shared
     from modules.options import OptionInfo
 
     if OPTION not in shared.opts.data_labels:
-        info = OptionInfo(DEFAULT, LABEL, section=SECTION, category_id=CATEGORY)
+        info = OptionInfo(DEFAULT, LABEL, section=SECTION)
         info = info.info("enable Edit ; disable img2img").info("pin to <b>Quicksettings</b> is recommended if changed often")
         shared.opts.add_option(OPTION, info)
     if SIZE_OPTION not in shared.opts.data_labels:
-        info = OptionInfo(SIZE_DEFAULT, SIZE_LABEL, section=SECTION, category_id=CATEGORY)
+        info = OptionInfo(SIZE_DEFAULT, SIZE_LABEL, section=SECTION)
         info = info.info("txt2img with one ImageStitch picture: enable about 1 MP in its proportions ; disable the sliders' size")
         shared.opts.add_option(SIZE_OPTION, info)
     if FUSED_OPTION not in shared.opts.data_labels:
-        info = OptionInfo(FUSED_DEFAULT, FUSED_LABEL, section=SECTION, category_id=CATEGORY)
+        info = OptionInfo(FUSED_DEFAULT, FUSED_LABEL, section=SECTION)
         info = info.info("comfy-kitchen fused norms, RoPE and SwiGLU in the DiT (bf16 and INT8 ConvRot files on CUDA) ; "
                          "off runs the plain path, for comparisons")
         shared.opts.add_option(FUSED_OPTION, info)
+    if ROPE_OPTION not in shared.opts.data_labels:
+        info = OptionInfo(ROPE_DEFAULT, ROPE_LABEL, gr.Slider,
+                          {"minimum": rope.MIN_SCALE, "maximum": rope.MAX_SCALE, "step": 0.01}, section=SECTION)
+        info = info.info("as ComfyUI's ScaleROPE: below 1 squeezes the image positions, for pictures well above 1 MP "
+                         "that come out stretched or with repeated subjects; 0.8 suits about 1536x1536 ; 1 changes "
+                         "nothing ; ignored when Auto is on")
+        shared.opts.add_option(ROPE_OPTION, info)
+    if ROPE_AUTO_OPTION not in shared.opts.data_labels:
+        info = OptionInfo(ROPE_AUTO_DEFAULT, ROPE_AUTO_LABEL, section=SECTION)
+        info = info.info("experimental: sets the scale from each pass's area (Hires fix too), 1 up to 1.5 MP, then "
+                         "the square root of 1.5 MP over the area, down to 0.5")
+        shared.opts.add_option(ROPE_AUTO_OPTION, info)
