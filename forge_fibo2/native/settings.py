@@ -87,12 +87,12 @@ def register() -> None:
     if ROPE_OPTION not in shared.opts.data_labels:
         info = OptionInfo(ROPE_DEFAULT, ROPE_LABEL, gr.Slider,
                           {"minimum": rope.MIN_SCALE, "maximum": rope.MAX_SCALE, "step": 0.01}, section=SECTION)
-        info = info.info("as ComfyUI's ScaleROPE: below 1 squeezes the image positions, for pictures well above 1 MP "
-                         "that come out stretched or with repeated subjects; 0.8 suits about 1536x1536 ; 1 changes "
-                         "nothing ; ignored when Auto is on")
+        info = info.info("as ComfyUI's ScaleROPE: below 1 squeezes the image positions, so pictures well above 1 MP "
+                         "keep the framing of 1 MP instead of turning into a wider scene with smaller subjects; 0.75 "
+                         "to 0.8 suits 2 to 4 MP, lower smears detail ; 1 changes nothing ; ignored when Auto is on")
         shared.opts.add_option(ROPE_OPTION, info)
     if ROPE_AUTO_OPTION not in shared.opts.data_labels:
         info = OptionInfo(ROPE_AUTO_DEFAULT, ROPE_AUTO_LABEL, section=SECTION)
-        info = info.info("experimental: sets the scale from each pass's area (Hires fix too), 1 up to 1.5 MP, then "
-                         "the square root of 1.5 MP over the area, down to 0.5")
+        info = info.info("experimental: sets the scale from each pass's area (Hires fix too): 1 up to 1 MP, then the "
+                         "square root of 1 MP over the area, never below 0.8 (0.82 at 1.5 MP, 0.8 from 1.56 MP)")
         shared.opts.add_option(ROPE_AUTO_OPTION, info)
