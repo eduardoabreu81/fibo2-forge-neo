@@ -27,6 +27,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from . import kernels, phases
+from . import rope as scaled_rope
 
 THETA = 256.0
 AXES_DIM = (32, 48, 48)
@@ -397,6 +398,8 @@ class Fibo2DiT(nn.Module):
         # every norm and cross-attention gate, for the fused path's per-forward constants (kernels.Constants)
         self.norms = [m for m in self.modules() if isinstance(m, RMSNorm)]
         self.gates = [b.cross_attn_gate for b in self.layers if b.cross_attention is not None]
+        # "[FIBO 2] RoPE scale" (rope.py), set by the engine before every sampling pass from that pass's size
+        self.rope_scale = 1.0
 
     def forward(self, x, timestep, context, transformer_options=None, ref_latents=None, **kwargs):
         """x (B, 128, H, W) latents, timestep (B,) = sigma, context (B, T, text_dim + 1) from the text engine (or
@@ -406,6 +409,7 @@ class Fibo2DiT(nn.Module):
 
             ref_latents = dynamic_args.ref_latents
         refs = [r for r in (ref_latents or []) if r is not None]
+        transformer_options = scaled_rope.with_scale(transformer_options, self.rope_scale)
 
         if context.shape[-1] != self.text_dim + 1:
             return self.run(x, timestep, context, refs, transformer_options)
